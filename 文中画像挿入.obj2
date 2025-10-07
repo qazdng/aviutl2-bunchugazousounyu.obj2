@@ -1,0 +1,295 @@
+--track@TEXT_TRANSPARENCY:文字透明度,0,100,0,0.01
+--track@SIZE:サイズ,1,1000,40,0.01
+--track@LINE_GAP:行間,-100,100,0,0.01
+--track@SPEED:表示速度,0,100,0,0.01
+--color@COL1:文字色,0xffffff
+--color@COL2:影・縁色,0xffffff
+--font@FONT:フォント,メイリオ
+--select@DECO:装飾タイプ,標準文字=0,影付き文字=1,影付き文字(薄)=2,縁取り文字=3,縁取り文字(細)=4,縁取り文字(太)=5,縁取り文字(角)=6
+--select@ALIGN:文字整列,左寄せ[上]=0,中央揃え[上]=1,右寄せ[上]=2,左寄せ[中]=3,中央揃え[中]=4,右寄せ[中]=5,左寄せ[下]=6,中央揃え[下]=7,右寄せ[下]=8
+--check@BOLD:太字,0
+--check@ITALIC:斜体,0
+--text@TEXT:テキスト,<$>
+--file@PATH:画像ファイル
+--track@IMAGE_ZOOM:画像拡大率,0,10000,100,0.001
+--track@IMAGE_TRANSPARENCY:画像透明度,0,100,0,0.01
+
+--information:文中画像挿入 <$[ファイル名][:サイズ][,X][,Y]> 2025.10.07 by qaz
+--[[  改変・再配布自由  確認環境:AviUtl ExEdit2 version2.0beta13 & Windows11 23H2
+    ・テキスト中に制御文字のように<$>と入れると
+      その位置に画像ファイルで読み出した画像を挿入します。
+    ・さらに下記のオプションが利用できます。
+      <$[ファイル名][:サイズ][,X移動量][,Y移動量]>
+    ・ファイル名に拡張子を含んだ完全なファイル名を入れると同ディレクトリの別画像を挿入できます。
+    ・ファイル名に4文字以下の英数字を入れると
+      拡張子の直前を入力文字に置換したファイル名の画像を挿入します。
+      画像を連番保存している場合などに便利です。
+      例: 元画像 = image_D000.png
+          入力 = <$72>
+          挿入画像 = image_D072.png
+    ・画像拡大率は100で文字サイズの等倍になります。
+    ・フォントによっては行間が通常のテキストオブジェクトと異なることがあります。
+    ・制御文字のうちスクリプトは使えません。
+    ・通常のテキストオブジェクトにある機能のうち字間、縦書きは対応していません。
+  ]]
+
+--[[  getvalue値を変数に落とし込み  ]]
+local CX = obj.getvalue("cx")
+local CY = obj.getvalue("cy")
+local CZ = obj.getvalue("cz")
+local TIME = obj.getvalue("time")
+--[[  変数のスケール変換  ]]
+local TEXT_OPACITY = (100 - TEXT_TRANSPARENCY) / 100
+local IMAGE_OPACITY = (100 - IMAGE_TRANSPARENCY) / 100
+local IMAGE_ZOOM = IMAGE_ZOOM / 100 
+local WAIT = 0
+if (SPEED > 0) then
+  WAIT = 1 / SPEED
+end
+
+--[[  strの改行位置を取得  ]]
+local function linefeed_pos(str)
+  local t = {}
+  local f = string.find(str, "\n")
+  while f do
+    table.insert(t, f)
+    f = string.find(str, "\n", f + 1)
+  end
+  return t
+end
+
+--[[  strの行数を取得  ]]
+local function line_num(str)
+  local t = linefeed_pos(str)
+  return #t + 1
+end
+
+--[[  strのn行目を取得  ]]
+local function get_line(str, n)
+  local t = linefeed_pos(str)
+  -- nの範囲外を除外
+  if (n < 1 or #t + 1 < n) then
+    return ""
+  end
+  -- 開始位置
+  local i = 1
+  if (n > 1) then
+    i = t[n-1] + 1
+  end
+  -- 終了位置
+  local j = #str
+  if (n < #t + 1) then
+    j = t[n] - 1
+  end
+  -- 出力
+  if (i <= j) then
+    return string.sub(str, i, j)
+  else
+    return ""
+  end
+end
+
+--[[  <$>を一文字分のスペースに変換し、横位置を記憶
+      戻り値 = { 変換後の文字,
+      1個目の画像挿入位置, 1個目の画像名, 1個目の画像size, 1個目の画像相対x, 1個目の画像相対y,
+      2個目の画像挿入位置, 2個目の画像名, 2個目の画像size, 2個目の画像相対x, 2個目の画像相対y,  ... }  ]]
+local function convert(str)
+  local t = {}
+  local s = str
+  -- <$>のパターンマッチ
+  local p = "<%$([^:>]*):?([0-9]*%.?[0-9]*),?(-?[0-9]*%.?[0-9]*),?(-?[0-9]*%.?[0-9]*)>"
+  local f, l = string.find(s, p)
+  while f do
+    -- パターンの部分だけ抜き出す
+    local sp = string.sub(s, f, l)
+    local i = string.gsub(sp, p, "%1")
+    local size = string.gsub(sp, p, "%2")
+    if (size == "") then
+      size = SIZE
+    end
+    local x = string.gsub(sp, p, "%3")
+    if (x == "") then
+      x = 0
+    end
+    local y = string.gsub(sp, p, "%4")
+    if (y == "") then
+      y = 0
+    end
+    -- tに各情報を格納
+    table.insert(t, f)
+    table.insert(t, i)
+    table.insert(t, size)
+    table.insert(t, x)
+    table.insert(t, y)
+    -- スペース(次の文字を遅らせる制御文字)に変換
+    local r = string.format("<p+%1.3f,+0><w%1.3f>", size, WAIT)
+    s = string.gsub(s, p, r, 1)
+    -- 次の探索
+    f, l = string.find(s, p)
+  end
+  -- sを先頭に挿入
+  table.insert(t, 1, s)
+  return t
+end
+
+--[[  strの文字数をカウント  ]]
+local function utf8_len(str)
+  local n = 0
+  for i = 1, #str do
+    -- 上位2ビットが10で始まらないバイトを数える
+    local b = string.byte(str, i)
+    if (b < 0x80 or 0xbf < b) then
+      n = n + 1
+    end
+  end
+  return n
+end
+
+--[[  strのn文字目に置く画像(幅=size)の、文字列に対するx位置を取得  ]]
+local function image_center(str, n, size)
+  if (string.gsub(str, "<[#s@rwcp][^>]*>", "") == "") then
+    return 0
+  end
+  obj.load("text", str)
+  -- 文字サイズの半分から全体の幅の半分を引く
+  local p = (size - obj.w) / 2
+  -- 手前の文字までの幅を足す
+  if (n > 1) then
+    local s = string.sub(str, 1, n - 1)
+    obj.load("text", s)
+    p = p + obj.w
+  end
+  return p
+end
+
+--[[  strをpathに掛けてパスを変換してるところ  ]]
+local function image_path(path, str)
+  -- strが空ならそのまま
+  if (str == "") then
+    return path
+  -- strが4文字以下なら拡張子の直前を置換
+  elseif (#str <= 4) then
+    local r = string.rep("%w", #str)
+    return string.gsub(path, r.."(%.%w+)$", str.."%1")
+  -- それ以外ならディレクトリ以下をstrに置換
+  else
+    return string.gsub(path, "([/\\])[^/\\]+$", "%1"..str)
+  end
+end
+
+--[[  1行分のstrを描画  ]]
+local function draw_line(str, cy, line_wait)
+  local t = convert(str)
+  local tcx = 0
+  -- 文字を描画
+  if (string.gsub(t[1], "<[#s@rwcp][^>]*>", "") ~= "") then
+    obj.load("text", t[1], SPEED, TIME - line_wait)
+    -- 左揃え,右揃え
+    if (ALIGN == 0 or ALIGN == 3 or ALIGN == 6) then
+      tcx = - obj.w / 2
+    elseif (ALIGN == 2 or ALIGN == 5 or ALIGN == 8) then
+      tcx = obj.w / 2
+    end
+    obj.cx = tcx
+    obj.cy = cy
+    obj.draw(0, 0, 0, 1, TEXT_OPACITY)
+  -- 描画なくても揃え位置だけ確保
+  elseif (ALIGN == 0 or ALIGN == 3 or ALIGN == 6) then
+    tcx = - SIZE / 2
+  elseif (ALIGN == 2 or ALIGN == 5 or ALIGN == 8) then
+    tcx = SIZE / 2
+  end
+  -- 画像を描画
+  if (IMAGE_ZOOM > 0) then
+    -- iはテーブルのindex、nは画像何番目か
+    local i = 2
+    local n = 0
+    -- 画像が続いたときの補正
+    local s_prev = ""
+    local continue = 0
+    local cont_size = 0
+    while (i < #t) do
+      -- 待機時間を過ぎているか確認
+      local s = string.sub(t[1], 1, t[i] - 1)
+      s = string.gsub(s, "<[#s@rwcp][^>]*>", "")
+      if (s_prev == s) then
+        continue = continue + 1
+      else
+        continue = 0
+        cont_size = 0
+      end
+      s_prev = s
+      local wait = line_wait + (utf8_len(s) + n) * WAIT
+      if (TIME >= wait) then
+        local size = t[i + 2]
+        local icx = tcx - cont_size - image_center(t[1], t[i], size) - t[i + 3]
+        local icy = cy - t[i + 4]
+        local path2 = image_path(PATH, t[i + 1])
+        if (continue > 0) then
+          cont_size = cont_size + size
+        else
+          cont_size = size
+        end
+        -- 画像をロードする
+        obj.load("image", path2)
+        if (obj.w > 0) then
+          -- 拡大率で中心の移動量がずれるのを補正
+          local izoom = IMAGE_ZOOM * size / obj.w
+          obj.cx = (icx + CX * (1 - izoom)) / izoom
+          obj.cy = (icy + CY * (1 - izoom)) / izoom
+          obj.cz = CZ * (1 - izoom) / izoom
+          obj.draw(0, 0, 0, izoom, IMAGE_OPACITY)
+        end
+      end
+      i = i + 5
+      n = n + 1
+    end
+  end
+end
+
+--[[  main定義  ]]
+local function main()
+  -- フォントセット
+  obj.setfont(FONT, SIZE, DECO, COL1, COL2)
+  local line_num = line_num(TEXT)
+  -- 基準Y座標から1行目中心までのYの位置 上揃え
+  local base_y = - SIZE / 2
+  -- 上下中央揃え
+  if (3 <= ALIGN and ALIGN <= 5) then
+    base_y = (line_num - 1) * (SIZE + LINE_GAP) / 2
+  -- 下揃え
+  elseif (6 <= ALIGN) then
+    base_y = (line_num * SIZE + (line_num - 1) * LINE_GAP) - SIZE / 2
+  end
+  -- 太字、斜体処理
+  local bi = ""
+  if (BOLD == 1 and ITALIC == 1) then
+    bi = "<s,,BI>"
+  elseif (BOLD == 1) then
+    bi = "<s,,B>"
+  elseif (ITALIC == 1) then
+    bi = "<s,,I>"
+  end
+  -- 行の待ち時間 無理矢理補正の1文字分マイナス
+  local line_wait = -WAIT
+  -- 行ごとに処理
+  for ln = 1, line_num do
+    -- 行テキスト取得
+    local lt = get_line(TEXT, ln)
+    if (ln ~= "") then
+    -- 太字、斜体追加
+      lt = bi..lt
+      -- Y方向揃え
+      local cy = base_y - (ln - 1) * (SIZE + LINE_GAP)
+      -- 中央揃え、右揃えで最後に画像が来ると変になるためサイズ0のスペースで無理矢理補正
+      draw_line("<s0> <s>"..lt.."<s0> ", cy, line_wait)
+      -- 次の行の待ち時間
+      local s = string.gsub(lt, "<[#s@rwcp][^>]*>", "")
+      s = string.gsub(s, "<%$[^>]*>", " ")
+      line_wait = line_wait + utf8_len(s) * WAIT
+    end
+  end
+end
+
+--[[  main実行  ]]
+main()
